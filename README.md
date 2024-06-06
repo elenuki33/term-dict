@@ -3,8 +3,8 @@ Creation of term dictionary LIWC
 
 This project aims to process and analyze comments using natural language processing (NLP) techniques. The analysis primarily focuses on author comments in scientific articles, involving data cleaning, transformation, Word2Vec model generation, and building synonym dictionaries for various term categories.
 
-#Project Structure
-##Libraries Used
+# Project Structure
+## Libraries Used
 The project utilizes several R libraries, including:
 
 * dplyr: For data manipulation.
