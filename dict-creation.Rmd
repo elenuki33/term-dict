@@ -1,0 +1,206 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(tidytext)
+library(stringr)
+library(tm)
+library(quanteda)
+library(quanteda.dictionaries)
+library(readr)
+library(h2o)
+```
+
+
+# Load data
+```{r}
+reviews <- read_csv("/home/data.csv")
+```
+
+# Cleaning
+```{r}
+reviewsClean <- reviews %>%
+  mutate(CommentsToAuthor = trimws(CommentsToAuthor),
+         CommentsToAuthor = tolower(CommentsToAuthor),
+         CommentsToAuthor = gsub("\\s?(f|ht)(tp)(s?)(://)([^\\.]*)[\\.|/](\\S*)", 
+                                 "webpage", CommentsToAuthor),
+         CommentsToAuthor = gsub("http\\w+\\s", "webpage", CommentsToAuthor),
+         CommentsToAuthor = gsub("[^[:alnum:]]", " ", CommentsToAuthor),
+         CommentsToAuthor = gsub("\\!", " ", CommentsToAuthor),
+         CommentsToAuthor = gsub("\\¡", " ", CommentsToAuthor),
+         CommentsToAuthor = gsub("\\,", " ", CommentsToAuthor),
+         CommentsToAuthor = gsub("\\.", " ", CommentsToAuthor),
+         CommentsToAuthor = gsub("\\¿", " ", CommentsToAuthor),
+         CommentsToAuthor = gsub("\\?", " ", CommentsToAuthor),
+         CommentsToAuthor = gsub("\\|", " ", CommentsToAuthor),
+         CommentsToAuthor = gsub("\\{", " ", CommentsToAuthor),
+         CommentsToAuthor = gsub("\\}", " ", CommentsToAuthor),
+         CommentsToAuthor = gsub("<", " ", CommentsToAuthor),
+         CommentsToAuthor = gsub(">", " ", CommentsToAuthor),
+         CommentsToAuthor = gsub("\\(", " ", CommentsToAuthor),
+         CommentsToAuthor = gsub("\\（", " ", CommentsToAuthor),
+         CommentsToAuthor = gsub("\\）", " ", CommentsToAuthor),
+         CommentsToAuthor = gsub("\\)", " ", CommentsToAuthor),
+         CommentsToAuthor = gsub("≈", " ", CommentsToAuthor),
+         CommentsToAuthor = gsub("；", " ", CommentsToAuthor),
+         CommentsToAuthor = gsub("›", " ", CommentsToAuthor),
+         CommentsToAuthor = gsub("◦", " ", CommentsToAuthor),
+         CommentsToAuthor = gsub("⟨", " ", CommentsToAuthor),
+         CommentsToAuthor = gsub("、", " ", CommentsToAuthor),
+         CommentsToAuthor = gsub("", " ", CommentsToAuthor),
+         CommentsToAuthor = gsub("≥", " ", CommentsToAuthor),
+         CommentsToAuthor = gsub("＞", " ", CommentsToAuthor),
+         CommentsToAuthor = gsub("→", " ", CommentsToAuthor),
+         CommentsToAuthor = gsub('’', ' ', CommentsToAuthor),
+         CommentsToAuthor = gsub('‘', ' ', CommentsToAuthor),
+         CommentsToAuthor = gsub('“', ' ', CommentsToAuthor),
+         CommentsToAuthor = gsub('”', ' ', CommentsToAuthor),
+         CommentsToAuthor = gsub('•', ' ', CommentsToAuthor),
+         CommentsToAuthor = gsub('–', ' ', CommentsToAuthor),
+         CommentsToAuthor = gsub('_', ' ', CommentsToAuthor),
+         CommentsToAuthor = gsub('\\d+', ' ', CommentsToAuthor),
+         CommentsToAuthor = gsub('references', 'literature', CommentsToAuthor),
+         CommentsToAuthor = gsub('[A-Za-z]+\\d+[A-Za-z]+', ' ', CommentsToAuthor),
+         CommentsToAuthor = gsub('[A-Za-z]+\\d+', ' ', CommentsToAuthor),
+         CommentsToAuthor = gsub('\\d+[A-Za-z]+', ' ', CommentsToAuthor),
+         CommentsToAuthor = gsub('<.*/>', ' ', CommentsToAuthor)) %>%
+  mutate(CommentsToAuthor = removeWords(CommentsToAuthor, words=stopwords("english"))) %>% 
+  mutate(CommentsToAuthor = str_squish(CommentsToAuthor),
+         CommentsToAuthor = trimws(CommentsToAuthor)) %>% 
+  mutate(CommentsToAuthor = stemDocument(CommentsToAuthor, language="english"))
+
+# remove html 
+save(reviewsClean, file = "./reviewsClean.RData")
+```
+
+
+# Generate model
+```{r}
+load("./reviewsClean.RData")
+
+kk <- reviewsClean %>% filter(str_detect(CommentsToAuthor, "<html>"))
+
+dim_word2vec <- 200
+
+h2o.init()
+h2o_object = as.h2o(reviewsClean)
+paraules <- h2o.tokenize(h2o_object$CommentsToAuthor, "\\\\W+")
+word2vec_model <- h2o.word2vec(paraules, min_word_freq = 10, epochs = 10, vec_size = dim_word2vec, window_size = 10)
+
+h2o.saveModel(word2vec_model, path="./data/", force = TRUE)
+
+```
+
+# Search synonnims of words in old dictionary
+```{r}
+h2o.init()
+
+saved_model <- h2o.loadModel("./data/Word2Vec_model") 
+
+dfDictWords <- dfDict %>% 
+  filter(str_count(term, "\\w+") == 1) 
+
+listSyn <- data.frame("Word" = c(1), "Syn" = c(1), "category" = c(1)) #data.frame
+
+
+for (i in 1:nrow(dfDictWords)){
+  row <- dfDictWords[i,]
+  tryCatch({
+    syn <- h2o.findSynonyms(saved_model, row$term, count = 20) %>% filter(score > 0.75)
+    syn <- syn %>% 
+      mutate(Word= row$term) %>% 
+      mutate(category= ifelse(row$term %in% dfDictWords$term, row$category, NA)) %>% 
+      rename(Syn = synonym) %>% 
+      select(-score)
+    listSyn <- rbind(listSyn, syn) #que cada cosa sea un elemento del df
+  },
+  error = function(e) {
+            message('An Error Occurred')
+            print(e)
+        }
+  )
+}
+
+
+```
+
+
+# Select synonims
+```{r}
+# Original dict words
+dfOldSyn <- dfDictWords %>% filter(!term %in% listSyn$Syn)
+
+# New words
+dfNewSyn <- listSyn %>% filter(!listSyn$Syn %in% dfDictWords$term)
+write.csv(dfNewSyn, "./dfNewSyn.csv", row.names=TRUE)
+
+
+dfDictSyn <- read_csv("/home/shared/ReviewsDictionary/dfNew_clean.csv")
+dfDictSyn <- dfDictSyn %>% 
+  filter(State == 1) %>% 
+  distinct(Syn, category) %>% 
+  rename(term = Syn) 
+
+```
+
+
+# New dict old + new words
+```{r}
+
+dfDictComplete <- rbind(dfDict, dfDictSyn)
+dfDictComplete <- dfDictComplete %>% distinct()
+```
+
+
+# Generate dict 
+```{r}
+dictRaw <- dfDictComplete
+
+# Categorias con num
+dictFinal <- dictRaw %>%
+  rename(categoryName = category) %>%
+  mutate(category = case_when(  
+    categoryName == 'cat1' ~ 1,
+    categoryName == 'cat2' ~ 2,
+    categoryName == 'cat3' ~ 3,
+    categoryName == 'cat4' ~ 4,
+    categoryName == 'cat5' ~ 5,
+    categoryName == 'cat6' ~ 6,
+    categoryName == 'cat7' ~ 7,
+    categoryName == 'cat8' ~ 10,
+    categoryName == 'cat9' ~ 11,
+    categoryName == 'cat10' ~ 12,
+    TRUE ~  NA_real_)) %>%
+  arrange(category) 
+
+# dict de categorias
+dictCategories <- dictFinal %>%
+  distinct(category, categoryName) %>%
+  mutate(fline = paste0(category, " ", categoryName)) 
+
+# dict term y categorias
+dictFinal <- dictFinal %>%
+  group_by(term) %>% 
+  mutate(fline = paste0(term[1], "  ", paste0(category, collapse = "  "))) %>%
+  ungroup() %>% 
+  distinct(fline) 
+
+# create dict review metrics
+file <- file("newdict.dict")
+lines <- c(
+  "%",
+  paste0(dictCategories$fline, ""),
+  "%",
+  paste0(dictFinal$fline, "")
+)
+writeLines(lines, file)
+close(file)
+
+```
+
+
